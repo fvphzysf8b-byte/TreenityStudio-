@@ -115,6 +115,17 @@ export function StoreProvider(props: StoreProviderProps) {
     }
   }, [props.mode, showToast])
 
+  // Warnen, wenn die Seite geschlossen wird, während noch gespeichert wird.
+  useEffect(() => {
+    if (syncStatus !== 'saving') return
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [syncStatus])
+
   const commit = useCallback(
     (next: AppData) => {
       const before = dataRef.current

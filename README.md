@@ -4,7 +4,9 @@ Deutschsprachige Web-App zur Organisation von Musik-, Recording- und Podcastproj
 
 **Ablauf:** Projekt anlegen → Session vorbereiten → Ergebnis dokumentieren → Audio-Versionen besprechen → nächste Schritte festhalten.
 
-> **Stand: MVP / Einzelbenutzer-Prototyp.** Daten liegen nur im Browser des jeweiligen Geräts. Es gibt keine Anmeldung und keine Synchronisation.
+> **Zwei Betriebsarten:**
+> - **Cloud (Standard, sobald `.env` gesetzt ist):** Anmeldung per E-Mail-Link, gemeinsame Supabase-Datenbank, Live-Abgleich zwischen Geräten und Personen.
+> - **Lokal (ohne Supabase-Konfiguration):** Daten nur im Browser des jeweiligen Geräts.
 
 ## Starten
 
@@ -38,7 +40,20 @@ Der Build in `dist/` ist statisch. Er funktioniert auf jedem einfachen Webhostin
 | **Audio** | Verlinkte Versionen mit Player bzw. externem Link und Feedback mit Zeitbezug (mm:ss) |
 | **Daten & Personen** | Beteiligte, Backup-Export/-Import, Beispieldaten |
 
-## Wo werden Daten gespeichert?
+## Supabase (Cloud-Modus)
+
+- Projekt „Treenity“ (Region eu-west-1). Verbindung in `.env`: `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`. Beide Werte sind öffentlich; geschützt wird über Anmeldung + Row Level Security.
+- Schema: `supabase/migrations/` – eine Tabelle pro Entität, Fremdschlüssel mit denselben Löschregeln wie in der App.
+- **Zugriff:** Nur E-Mail-Adressen in `team_members` können sich registrieren und Daten lesen/schreiben (gemeinsamer Studio-Bereich). Freischalten unter **Daten & Personen → Team-Zugang**.
+- **Speichern:** Die Geschäftslogik bleibt unverändert; nach jeder Aktion werden nur die geänderten Datensätze geschrieben (`src/persistence/remote/diff.ts`). Änderungen anderer kommen per Realtime herein. Bei gleichzeitiger Änderung desselben Eintrags gilt die zuletzt gespeicherte Fassung.
+- **Anmeldung:** E-Mail-Link (PKCE). Steht in der E-Mail zusätzlich ein Code (`{{ .Token }}` im Template), kann er in der App eingegeben werden – nützlich, wenn der Link in einem anderen Browser aufgeht.
+- **Einmalige Einrichtung im Supabase-Dashboard:**
+  - Authentication → URL Configuration: *Site URL* `https://fvphzysf8b-byte.github.io/TreenityStudio-/`, *Redirect URLs* zusätzlich `http://localhost:5173/**`.
+  - Optional: Authentication → Email Templates → Magic Link um `{{ .Token }}` ergänzen.
+  - Für Logins von Personen außerhalb der Supabase-Organisation: eigenen SMTP-Dienst eintragen (Authentication → SMTP), da der eingebaute Versand stark begrenzt ist.
+- Lokale Browserdaten aus der Zeit vor der Datenbank lassen sich unter **Daten & Personen → Lokale Daten übernehmen** einmalig hochladen.
+
+## Wo werden Daten im lokalen Modus gespeichert?
 
 - Im **localStorage des Browsers** unter dem Schlüssel `treenitystudio:data`.
 - Jede Änderung wird sofort gespeichert und übersteht einen Reload.
@@ -83,13 +98,12 @@ Pfade (z. B. `~/Musik/Treenity/Projekt`) können als Link der Art „Projektordn
 
 ## Einschränkungen
 
-- **Kein gemeinsamer Speicher:** Jeder Browser und jedes Gerät hat eigene Daten. Austausch nur über Export/Import.
-- **Keine Anmeldung, keine Zugriffsrechte.** Personen sind reine Zuordnungsdatensätze.
-- Browserdaten können durch Löschen der Website-Daten oder im privaten Modus verloren gehen. Deshalb regelmäßig ein Backup exportieren.
+- **Cloud-Modus braucht Internet.** Ohne Verbindung zeigt die App „Offline“; Änderungen, die nicht gespeichert werden konnten, gehen beim Neuladen verloren (die App warnt beim Schließen während des Speicherns).
+- **Gleichzeitiges Bearbeiten desselben Eintrags:** Die zuletzt gespeicherte Fassung gilt, es gibt keine Zusammenführung.
+- **Personen ≠ Benutzerkonten:** Beteiligte sind Zuordnungsdatensätze; die Anmeldung läuft über die Team-Liste.
+- **Lokaler Modus:** Daten nur in diesem Browser; Austausch nur über Export/Import.
 - Keine Synchronisation mit Notion oder Drive. Externe Inhalte werden nur verlinkt.
 - Kein Hosting oder Verarbeiten von Audio-/DAW-Dateien.
-
-**Für die gemeinsame Nutzung mit Christian und Alex** braucht es als nächste Ausbaustufe: echte Anmeldung, eine gemeinsame Datenbank (z. B. Supabase) und serverseitige Zugriffsrechte. Die Trennung von Geschäftslogik (`src/domain`) und Persistenz (`src/persistence`) ist darauf vorbereitet.
 
 ## Projektstruktur
 
@@ -97,12 +111,13 @@ Pfade (z. B. `~/Musik/Treenity/Projekt`) können als Link der Art „Projektordn
 src/
   domain/        Fachmodell, Geschäftslogik (reine Funktionen), Validierung, Abfragen, Beispieldaten
   persistence/   Datenformat (Zod-Schema, Versionierung), localStorage, Export/Import/Zusammenführen
+    remote/      Supabase: Verbindung, Tabellen-Abbildung, Änderungserkennung, Sync & Realtime
   state/         App-Zustand (React Context), Speichern, Rückgängig
   ui/            Layout, Komponenten, Ansichten
     brand/Logo.tsx   Wortmarke – hier später das Treenity-Logo einsetzen
 ```
 
-Stack: React, TypeScript, Vite, Tailwind CSS, React Router, Zod, Vitest.
+Stack: React, TypeScript, Vite, Tailwind CSS, React Router, Zod, Supabase, Vitest.
 
 ## Beispieldaten
 

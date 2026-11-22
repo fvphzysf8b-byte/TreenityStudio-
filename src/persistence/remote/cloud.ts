@@ -30,6 +30,8 @@ export async function loadRemote(): Promise<AppData> {
   const results = await Promise.all(COLLECTIONS.map((c) => fetchAll(c.table)))
   const raw: Record<string, unknown> = { schemaVersion: SCHEMA_VERSION }
   COLLECTIONS.forEach((c, i) => (raw[c.key] = results[i].map(fromRow)))
+  // Stabile, lesbare Reihenfolge der Beteiligten (die Datenbank liefert nach ID sortiert).
+  ;(raw.people as { name: string }[]).sort((a, b) => a.name.localeCompare(b.name, 'de'))
   const parsed = appDataSchema.safeParse(raw)
   if (!parsed.success) {
     const issue = parsed.error.issues[0]
