@@ -1,12 +1,17 @@
 /**
- * App-Zustand: hält die Daten, speichert jede Änderung im Browser
- * und bietet „Rückgängig“ für verändernde bzw. löschende Aktionen.
+ * App-Zustand: hält die Daten, speichert jede Änderung und bietet „Rückgängig“.
+ *
+ * Zwei Betriebsarten:
+ * - local: Speicherung nur im Browser (localStorage).
+ * - cloud: Speicherung in Supabase; Änderungen anderer Teammitglieder kommen live herein.
+ * Die Geschäftslogik ist in beiden Fällen identisch.
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { DomainError } from '../domain/operations'
 import { initialData } from '../domain/seed'
 import type { AppData } from '../domain/types'
 import { emptyData } from '../domain/types'
+import { CloudSync, type SyncStatus } from '../persistence/remote/cloud'
 import { STORAGE_KEY, loadData, saveData } from '../persistence/storage'
 
 export interface Toast {
@@ -17,15 +22,12 @@ export interface Toast {
 }
 
 interface ApplyOptions {
-  /** Erfolgsmeldung. */
   success?: string
-  /** Bei gesetztem Wert wird „Rückgängig“ angeboten. */
   undoable?: boolean
 }
 
 interface StoreValue {
   data: AppData
-  /** Führt eine Änderung aus. Gibt false zurück, wenn sie fachlich abgelehnt wurde. */
   apply: (fn: (d: AppData) => AppData, options?: ApplyOptions) => boolean
   toast: Toast | null
   showToast: (kind: Toast['kind'], message: string) => void
@@ -35,11 +37,15 @@ interface StoreValue {
   loadIssue: string | null
   storageUnavailable: boolean
   startFresh: () => void
+  mode: 'local' | 'cloud'
+  syncStatus: SyncStatus
+  userEmail: string | null
+  signOut: () => void
 }
 
 const StoreContext = createContext<StoreValue | null>(null)
 
-function initialState(): { data: AppData; loadIssue: string | null; unavailable: boolean; writeBlocked: boolean } {
+function initialLocalState(): { data: AppData; loadIssue: string | null; unavailable: boolean; writeBlocked: boolean } {
   const result = loadData()
   switch (result.status) {
     case 'ok':
@@ -57,28 +63,73 @@ function initialState(): { data: AppData; loadIssue: string | null; unavailable:
   }
 }
 
-export function StoreProvider({ children }: { children: ReactNode }) {
-  const [init] = useState(initialState)
+export type StoreProviderProps =
+  | { mode: 'local'; children: ReactNode }
+  | { mode: 'cloud'; initial: AppData; userEmail: string; onSignOut: () => void; children: ReactNode }
+
+export function StoreProvider(props: StoreProviderProps) {
+  const { children } = props
+  const [init] = useState(() =>
+    props.mode === 'local'
+      ? initialLocalState()
+      : { data: props.initial, loadIssue: null, unavailable: false, writeBlocked: false },
+  )
   const [data, setData] = useState<AppData>(init.data)
   const dataRef = useRef(init.data)
   const writeBlocked = useRef(init.writeBlocked)
   const [loadIssue, setLoadIssue] = useState(init.loadIssue)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('synced')
   const [toast, setToast] = useState<Toast | null>(null)
   const toastId = useRef(0)
-
-  const commit = useCallback((next: AppData) => {
-    dataRef.current = next
-    setData(next)
-    if (writeBlocked.current) return
-    const r = saveData(next)
-    setSaveError(r.ok ? null : r.error)
-  }, [])
+  const syncRef = useRef<CloudSync | null>(null)
 
   const showToast = useCallback((kind: Toast['kind'], message: string, undo?: AppData) => {
     toastId.current += 1
     setToast({ id: toastId.current, kind, message, undo })
   }, [])
+
+  // Cloud-Synchronisation starten
+  useEffect(() => {
+    if (props.mode !== 'cloud') return
+    const sync = new CloudSync(
+      (remote) => {
+        dataRef.current = remote
+        setData(remote)
+      },
+      (status, error) => {
+        setSyncStatus(status)
+        if (status === 'error' && error) {
+          setSaveError(error)
+          showToast('error', `Änderung konnte nicht gespeichert werden: ${error} Der Stand wird neu geladen.`)
+        } else if (status === 'synced') {
+          setSaveError(null)
+        }
+      },
+    )
+    syncRef.current = sync
+    sync.start()
+    return () => {
+      sync.stop()
+      syncRef.current = null
+    }
+  }, [props.mode, showToast])
+
+  const commit = useCallback(
+    (next: AppData) => {
+      const before = dataRef.current
+      dataRef.current = next
+      setData(next)
+      if (props.mode === 'cloud') {
+        syncRef.current?.save(before, next)
+        return
+      }
+      if (writeBlocked.current) return
+      const r = saveData(next)
+      setSaveError(r.ok ? null : r.error)
+    },
+    [props.mode],
+  )
 
   const apply = useCallback(
     (fn: (d: AppData) => AppData, options: ApplyOptions = {}) => {
@@ -94,7 +145,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         throw e
       }
       if (writeBlocked.current) {
-        // Erste bewusste Änderung nach einem Ladefehler – ab jetzt wird gespeichert.
         writeBlocked.current = false
         setLoadIssue(null)
       }
@@ -122,8 +172,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     showToast('info', 'Neuer, leerer Datenstand angelegt.')
   }, [commit, showToast])
 
-  // Änderungen aus einem anderen Tab übernehmen, statt sie zu überschreiben.
+  // Lokaler Modus: Änderungen aus einem anderen Tab übernehmen, statt sie zu überschreiben.
   useEffect(() => {
+    if (props.mode !== 'local') return
     function onStorage(e: StorageEvent) {
       if (e.key !== STORAGE_KEY) return
       const r = loadData()
@@ -135,7 +186,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
-  }, [showToast])
+  }, [props.mode, showToast])
+
+  const userEmail = props.mode === 'cloud' ? props.userEmail : null
+  const signOut = props.mode === 'cloud' ? props.onSignOut : () => undefined
 
   const value = useMemo<StoreValue>(
     () => ({
@@ -149,8 +203,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       loadIssue,
       storageUnavailable: init.unavailable,
       startFresh,
+      mode: props.mode,
+      syncStatus,
+      userEmail,
+      signOut,
     }),
-    [data, apply, toast, showToast, undo, saveError, loadIssue, init.unavailable, startFresh],
+    [data, apply, toast, showToast, undo, saveError, loadIssue, init.unavailable, startFresh, props.mode, syncStatus, userEmail, signOut],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

@@ -1,5 +1,7 @@
 import { HashRouter, Route, Routes } from 'react-router'
+import { cloudConfigured } from './persistence/remote/client'
 import { StoreProvider } from './state/store'
+import { CloudRoot } from './ui/CloudRoot'
 import { Layout } from './ui/Layout'
 import { AudioDetailView } from './ui/views/AudioDetailView'
 import { AudioFormView } from './ui/views/AudioFormView'
@@ -15,8 +17,21 @@ import { SessionFormView } from './ui/views/SessionFormView'
 import { SessionsView } from './ui/views/SessionsView'
 
 export default function App() {
+  // Mit Supabase-Konfiguration: Anmeldung + gemeinsame Datenbank. Sonst: lokaler Browser-Speicher.
+  return cloudConfigured ? (
+    <CloudRoot>
+      <AppRoutes />
+    </CloudRoot>
+  ) : (
+    <StoreProvider mode="local">
+      <AppRoutes />
+    </StoreProvider>
+  )
+}
+
+function AppRoutes() {
   return (
-    <StoreProvider>
+    <>
       {/* HashRouter: funktioniert ohne Server-Konfiguration, auch bei statischem Hosting. */}
       <HashRouter>
         <Routes>
@@ -39,6 +54,6 @@ export default function App() {
           </Route>
         </Routes>
       </HashRouter>
-    </StoreProvider>
+    </>
   )
 }

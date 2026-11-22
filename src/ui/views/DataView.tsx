@@ -1,10 +1,11 @@
-import { useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { createPerson, deletePerson, updatePerson } from '../../domain/operations'
 import { addExamples, hasExamples, removeExamples } from '../../domain/seed'
 import type { AppData, Person } from '../../domain/types'
 import { formatIso } from '../../domain/util'
 import { validatePerson } from '../../domain/validation'
-import { readCorruptBackup } from '../../persistence/storage'
+import { supabase } from '../../persistence/remote/client'
+import { STORAGE_KEY, readCorruptBackup } from '../../persistence/storage'
 import { countRecords, exportFileName, mergeData, parseEnvelope, serializeExport } from '../../persistence/transfer'
 import { useStore } from '../../state/store'
 import { Field } from '../components/form'
@@ -23,7 +24,7 @@ function download(text: string, fileName: string) {
 }
 
 export function DataView() {
-  const { data, apply, loadIssue } = useStore()
+  const { data, apply, loadIssue, mode, userEmail, signOut } = useStore()
   const examples = hasExamples(data)
   const corrupt = loadIssue ? readCorruptBackup() : null
 
@@ -33,19 +34,40 @@ export function DataView() {
 
       <div className="grid gap-x-8 lg:grid-cols-2">
         <div>
-          <Section title="Wo liegen die Daten?">
-            <div className="card space-y-2 p-4 text-sm text-muted">
-              <p>
-                Alle Daten werden <strong className="text-text">nur in diesem Browser auf diesem Gerät</strong> gespeichert
-                (localStorage). Es gibt keine Synchronisation zwischen Geräten oder Personen.
-              </p>
-              <p>
-                Browserdaten können verloren gehen (z. B. beim Löschen von Website-Daten). Exportiere deshalb regelmäßig ein
-                Backup und lege es z. B. in Drive ab.
-              </p>
-              <p>Für gemeinsame Nutzung braucht es später Anmeldung, eine gemeinsame Datenbank und Zugriffsrechte.</p>
-            </div>
-          </Section>
+          {mode === 'cloud' ? (
+            <>
+              <Section title="Wo liegen die Daten?">
+                <div className="card space-y-2 p-4 text-sm text-muted">
+                  <p>
+                    Die Daten liegen in der <strong className="text-text">gemeinsamen Treenity-Datenbank</strong> (Supabase, EU).
+                    Alle freigeschalteten Teammitglieder sehen denselben Stand – auf jedem Gerät. Änderungen der anderen
+                    erscheinen automatisch.
+                  </p>
+                  <p>Ein Backup als Datei schadet trotzdem nicht, z. B. vor größeren Aufräumaktionen.</p>
+                  <p className="pt-1">
+                    Angemeldet als <strong className="text-text">{userEmail}</strong>.{' '}
+                    <button type="button" className="link" onClick={signOut}>
+                      Abmelden
+                    </button>
+                  </p>
+                </div>
+              </Section>
+              <LocalDataTransfer />
+            </>
+          ) : (
+            <Section title="Wo liegen die Daten?">
+              <div className="card space-y-2 p-4 text-sm text-muted">
+                <p>
+                  Alle Daten werden <strong className="text-text">nur in diesem Browser auf diesem Gerät</strong> gespeichert
+                  (localStorage). Es gibt keine Synchronisation zwischen Geräten oder Personen.
+                </p>
+                <p>
+                  Browserdaten können verloren gehen (z. B. beim Löschen von Website-Daten). Exportiere deshalb regelmäßig ein
+                  Backup und lege es z. B. in Drive ab.
+                </p>
+              </div>
+            </Section>
+          )}
 
           <Section title="Backup exportieren">
             <div className="card space-y-3 p-4">
@@ -67,6 +89,7 @@ export function DataView() {
         </div>
 
         <div>
+          {mode === 'cloud' && <TeamSection />}
           <PeopleSection />
 
           <Section title="Beispieldaten">
@@ -98,7 +121,7 @@ export function DataView() {
 type Pending = { incoming: AppData; exportedAt: string | null; fileName: string }
 
 function ImportSection() {
-  const { data, apply, showToast } = useStore()
+  const { data, apply, showToast, mode: storeMode } = useStore()
   const inputRef = useRef<HTMLInputElement>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState<Pending | null>(null)
@@ -230,7 +253,7 @@ function ImportSection() {
                 <span>
                   <span className="font-medium">Ersetzen</span>
                   <span className="block text-sm text-muted">
-                    Alle aktuellen Daten in diesem Browser werden durch den Inhalt der Datei ersetzt.
+                    {storeMode === 'cloud' ? 'Alle Daten in der gemeinsamen Datenbank werden ersetzt – für das ganze Team.' : 'Alle aktuellen Daten in diesem Browser werden durch den Inhalt der Datei ersetzt.'}
                   </span>
                 </span>
               </label>
@@ -269,7 +292,7 @@ function ImportSection() {
         }}
       >
         <p>
-          {data.projects.length} Projekte, {data.sessions.length} Sessions und alle weiteren Einträge in diesem Browser werden durch die
+          {data.projects.length} Projekte, {data.sessions.length} Sessions und alle weiteren Einträge {storeMode === 'cloud' ? 'in der gemeinsamen Datenbank (für alle im Team)' : 'in diesem Browser'} werden durch die
           Datei ersetzt.
         </p>
         <p>{backupFirst ? 'Vorher wird ein Backup des aktuellen Stands heruntergeladen.' : 'Es wird kein Backup des aktuellen Stands erstellt.'}</p>
@@ -403,5 +426,154 @@ function PersonRow({ person, onDelete }: { person: Person; onDelete: () => void 
         </button>
       </div>
     </li>
+  )
+}
+
+/** Cloud-Modus: Team-Liste – wer sich anmelden darf. */
+function TeamSection() {
+  const { userEmail, showToast } = useStore()
+  const [emails, setEmails] = useState<string[] | null>(null)
+  const [email, setEmail] = useState('')
+  const [error, setError] = useState<string>()
+  const [toRemove, setToRemove] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    const { data, error } = await supabase().from('team_members').select('email').order('email')
+    if (error) showToast('error', `Team-Liste konnte nicht geladen werden: ${error.message}`)
+    else setEmails(data.map((r) => r.email as string))
+  }, [showToast])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  async function add(e: FormEvent) {
+    e.preventDefault()
+    const addr = email.trim().toLowerCase()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addr)) return setError('Bitte gib eine gültige E-Mail-Adresse ein.')
+    if (emails?.includes(addr)) return setError('Diese Adresse steht schon auf der Liste.')
+    setError(undefined)
+    const { error } = await supabase().from('team_members').insert({ email: addr })
+    if (error) return setError(`Konnte nicht hinzugefügt werden: ${error.message}`)
+    setEmail('')
+    showToast('success', `${addr} kann sich jetzt anmelden.`)
+    void load()
+  }
+
+  async function remove(addr: string) {
+    const { error } = await supabase().from('team_members').delete().eq('email', addr)
+    if (error) showToast('error', `Konnte nicht entfernt werden: ${error.message}`)
+    else showToast('success', `${addr} wurde von der Team-Liste entfernt.`)
+    void load()
+  }
+
+  return (
+    <Section title="Team-Zugang">
+      <p className="mb-3 text-sm text-faint">
+        Nur diese E-Mail-Adressen können sich anmelden. Alle Freigeschalteten sehen und bearbeiten alle Projekte.
+      </p>
+      {emails === null ? (
+        <p className="text-sm text-faint">Wird geladen …</p>
+      ) : (
+        <ul className="mb-4 space-y-2">
+          {emails.map((addr) => (
+            <li key={addr} className="card flex items-center justify-between gap-3 p-3 text-sm">
+              <span className="break-all">
+                {addr}
+                {addr === userEmail?.toLowerCase() && <span className="text-faint"> (du)</span>}
+              </span>
+              {addr !== userEmail?.toLowerCase() && (
+                <button type="button" className="shrink-0 text-danger underline" onClick={() => setToRemove(addr)}>
+                  Entfernen<span className="sr-only">: {addr}</span>
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <form noValidate onSubmit={add} className="card space-y-3 p-4">
+        <Field label="E-Mail freischalten" required error={error}>
+          <input className="input" type="email" inputMode="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+        </Field>
+        <Button type="submit" size="sm">
+          + Freischalten
+        </Button>
+      </form>
+      <ConfirmDialog
+        open={toRemove !== null}
+        title="Zugang entfernen?"
+        confirmLabel="Zugang entfernen"
+        onCancel={() => setToRemove(null)}
+        onConfirm={() => {
+          const addr = toRemove
+          setToRemove(null)
+          if (addr) void remove(addr)
+        }}
+      >
+        <p>{toRemove} kann danach keine Daten mehr sehen oder ändern. Projekte und Feedback bleiben erhalten.</p>
+      </ConfirmDialog>
+    </Section>
+  )
+}
+
+/** Cloud-Modus: Daten, die vorher nur in diesem Browser lagen, in die gemeinsame Datenbank übernehmen. */
+function LocalDataTransfer() {
+  const { data, apply, showToast } = useStore()
+  const [local] = useState(() => {
+    try {
+      const text = localStorage.getItem(STORAGE_KEY)
+      if (!text) return null
+      const r = parseEnvelope(text)
+      return r.ok && r.data.projects.length > 0 ? r.data : null
+    } catch {
+      return null
+    }
+  })
+  const [done, setDone] = useState(() => localStorage.getItem(`${STORAGE_KEY}:uebernommen`) === '1')
+  if (!local || done) return null
+
+  function transfer() {
+    let report
+    try {
+      report = mergeData(data, local!)
+    } catch (e) {
+      showToast('error', (e as Error).message)
+      return
+    }
+    const merged = report.data
+    if (
+      apply(() => merged, {
+        undoable: true,
+        success: `${report.added} Einträge aus diesem Browser übernommen${report.skipped ? `, ${report.skipped} bereits vorhanden` : ''}.`,
+      })
+    ) {
+      localStorage.setItem(`${STORAGE_KEY}:uebernommen`, '1')
+      setDone(true)
+    }
+  }
+
+  return (
+    <Section title="Lokale Daten übernehmen">
+      <div className="card space-y-3 border-gold-500/50 p-4 text-sm text-muted">
+        <p>
+          In diesem Browser liegen noch <strong className="text-text">{local.projects.length} Projekte</strong> aus der Zeit vor
+          der Datenbank. Sollen sie in die gemeinsame Datenbank übernommen werden? Bereits vorhandene Einträge werden nicht
+          überschrieben; Personen mit gleichem Namen werden zusammengeführt.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="primary" onClick={transfer}>
+            Übernehmen
+          </Button>
+          <Button
+            onClick={() => {
+              localStorage.setItem(`${STORAGE_KEY}:uebernommen`, '1')
+              setDone(true)
+            }}
+          >
+            Nicht übernehmen
+          </Button>
+        </div>
+      </div>
+    </Section>
   )
 }

@@ -36,11 +36,12 @@ export function Layout() {
         Zum Inhalt springen
       </a>
       <header className="sticky top-0 z-30 border-b border-ink-700/80 bg-ink-950/90 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-4 px-4">
+        <div className="mx-auto flex h-14 max-w-6xl items-center gap-3 px-4">
           <Link to="/" aria-label="TreenityStudio – zur Übersicht" className="rounded">
             <Logo />
           </Link>
-          <nav aria-label="Hauptnavigation" className="hidden sm:block">
+          <SyncIndicator />
+          <nav aria-label="Hauptnavigation" className="ml-auto hidden sm:block">
             <ul className="flex gap-1">
               {NAV.map((n) => (
                 <li key={n.to}>
@@ -59,7 +60,7 @@ export function Layout() {
               </li>
             </ul>
           </nav>
-          <NavLink to="/daten" className={(s) => `${navClass(s)} sm:hidden`}>
+          <NavLink to="/daten" className={(s) => `${navClass(s)} ml-auto sm:hidden`}>
             Daten
           </NavLink>
         </div>
@@ -104,6 +105,24 @@ export function Layout() {
 
       <ToastHost />
     </div>
+  )
+}
+
+/** Zeigt im Cloud-Modus, ob alles gespeichert ist – mit Text, nicht nur Farbe. */
+function SyncIndicator() {
+  const { mode, syncStatus } = useStore()
+  if (mode !== 'cloud') return null
+  const map = {
+    synced: { icon: '☁', text: 'Gespeichert', cls: 'text-faint' },
+    saving: { icon: '↻', text: 'Speichert …', cls: 'text-gold-300' },
+    error: { icon: '⚠', text: 'Nicht gespeichert', cls: 'text-danger' },
+    offline: { icon: '⚠', text: 'Offline', cls: 'text-danger' },
+  }[syncStatus]
+  return (
+    <span className={`flex items-center gap-1 text-xs ${map.cls}`} role="status" aria-live="polite">
+      <span aria-hidden="true">{map.icon}</span>
+      <span className={syncStatus === 'synced' ? 'sr-only sm:not-sr-only' : ''}>{map.text}</span>
+    </span>
   )
 }
 
